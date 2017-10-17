@@ -268,6 +268,10 @@ function Get-COMMethods {
     $namemap = @{}
 
     foreach($mi in $mis) {
+        #$visible = Get-IsMemberCOMVisible $mi
+        #if (!$visible) {
+        #    continue;
+        #}
         $name = $mi.Name
         if ($namemap.ContainsKey($name.ToLower())) {
             $index = $namemap[$name.ToLower()]            
@@ -323,6 +327,10 @@ function Get-COMProperties {
     $namemap = @{}
 
     foreach($pi in $pis) {
+        #$visible = Get-IsMemberCOMVisible $pi
+        #if (!$visible) {
+        #    continue;
+        #}
         $name = $pi.Name
         if ($namemap.ContainsKey($name.ToLower())) {
             $index = $namemap[$name.ToLower()]
@@ -646,6 +654,97 @@ function Out-ComTypeManifest {
             "var manifest = '$xml';" | Set-Content $Output -Encoding UTF8
         } else {
             $xml | Set-Content $Output -Encoding UTF8
+        }
+    }
+}
+
+function Get-PInvokeMethodsFromAssembly {
+    [CmdletBinding()]
+    param(
+        [parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [Reflection.Assembly]$Assembly
+    )
+    PROCESS {
+        $methods = @()
+        $types = $Assembly.GetTypes()
+        foreach($type in $types) {
+            $public = $type.GetMethods("Static, Public") | Where-Object {$_.Attributes -match "PinvokeImpl"}
+            $private = $type.GetMethods("Static, NonPublic") | Where-Object {$_.Attributes -match "PinvokeImpl"}
+            $methods += $public
+            $methods += $private
+        }
+        Write-Output $methods
+    }
+}
+
+function Format-PInvokeMethod {
+    [CmdletBinding()]
+    param(
+        [parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [System.Reflection.MethodInfo]$Method
+    )
+    PROCESS {
+        $dllimp_type = [System.Runtime.InteropServices.DllImportAttribute]
+        $dllimport = $Method.GetCustomAttributes($dllimp_type, $false)
+        if ($dllimport.Count -eq 0) {
+            $PSCmdlet.WriteWarning("Method $Method does not have a valid DllImport attribute")
+            return
+        }
+
+        $is_public = $Method.IsPublic -and $Method.DeclaringType.IsPublic
+
+        $props = @{
+            AssemblyName=$Method.DeclaringType.Assembly.GetName().Name;
+            Type=$Method.DeclaringType;
+            Method=$Method;
+            DllName=$dllimport[0].Value;
+            DllImport=$dllimport[0];
+            IsPublic=$is_public;
+        }
+        $obj = New-Object –TypeName PSObject –Prop $props
+        Write-Output $obj
+    }
+}
+
+
+<#
+.SYNOPSIS
+Get a list pinvoke methods from an assembly.
+.DESCRIPTION
+This cmdlet enumerates the types in a list of assemblies, finds any pinvoke methods and formats them into an object.
+.PARAMETER AssemblyName
+Specify a list of assembly names to load and inspect. Can be a short/long assembly name or a path to a file.
+.PARAMETER Assembly
+Specify a list of loaded assemblies.
+.INPUTS
+string[] - AssemblyName from pipeline.
+.OUTPUTS
+PSObject
+.EXAMPLE
+@("mscorlib", "System") | Get-PInvokeMethods
+Get all PInvoke methods from the mscorlib and System assemblies.
+#>
+function Get-PInvokeMethods {
+    [CmdletBinding(DefaultParameterSetName="FromName")]
+    param(
+        [parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ParameterSetName="FromName")]
+        [string[]]$AssemblyName,
+        [parameter(Mandatory=$true, Position=0, ParameterSetName="FromAssembly")]
+        [System.Reflection.Assembly[]]$Assembly
+    )
+    BEGIN {
+        $created = New-Object System.Collections.Generic.HashSet[string]
+    }
+    PROCESS {
+        if ($Assembly -eq $null) {
+            $asm = $AssemblyName | Get-Assembly
+        } else {
+            $asm = $Assembly
+        }
+
+        $methods = $asm | Where-Object { $created.Add($_.Fullname) } | Get-PInvokeMethodsFromAssembly | Format-PInvokeMethod
+        if ($methods.Count -gt 0) {
+            Write-Output $methods
         }
     }
 }
