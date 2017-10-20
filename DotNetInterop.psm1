@@ -677,6 +677,17 @@ function Get-PInvokeMethodsFromAssembly {
     }
 }
 
+function Get-DefaultDllImportSearchPaths {
+    param(
+        [System.Reflection.ICustomAttributeProvider]$Provider
+    )
+    $type = [System.Runtime.InteropServices.DefaultDllImportSearchPathsAttribute]
+    if ($Provider.IsDefined($type, $false)) {
+        return $Provider.GetCustomAttributes($type, $false)[0].Paths
+    }
+    return 0
+}
+
 function Format-PInvokeMethod {
     [CmdletBinding()]
     param(
@@ -692,6 +703,13 @@ function Format-PInvokeMethod {
         }
 
         $is_public = $Method.IsPublic -and $Method.DeclaringType.IsPublic
+        $dll_default = Get-DefaultDllImportSearchPaths($Method)
+        if ($dll_default -eq 0) {
+            $dll_default = Get-DefaultDllImportSearchPaths($Method.DeclaringType.Assembly)
+            if ($dll_default -eq 0) {
+                $dll_default = [System.Runtime.InteropServices.DllImportSearchPath]::LegacyBehavior
+            }
+        }
 
         $props = @{
             AssemblyName=$Method.DeclaringType.Assembly.GetName().Name;
@@ -700,6 +718,7 @@ function Format-PInvokeMethod {
             DllName=$dllimport[0].Value;
             DllImport=$dllimport[0];
             IsPublic=$is_public;
+            DllSearchPaths=$dll_default;
         }
         $obj = New-Object –TypeName PSObject –Prop $props
         Write-Output $obj
@@ -743,8 +762,6 @@ function Get-PInvokeMethods {
         }
 
         $methods = $asm | Where-Object { $created.Add($_.Fullname) } | Get-PInvokeMethodsFromAssembly | Format-PInvokeMethod
-        if ($methods.Count -gt 0) {
-            Write-Output $methods
-        }
+        Write-Output $methods
     }
 }
