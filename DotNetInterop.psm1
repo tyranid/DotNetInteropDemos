@@ -482,6 +482,10 @@ Specify to emit the CodeBase value for the registration.
 Specify to register the types in the Local Machine hive. The default is the Current User hive.
 .PARAMETER Version2
 Specify to register the types with the v2 runtime. Default is the v4 runtime.
+.PARAMETER FakeClsid
+Specify to generate a new random CLSID when generating the registry file. This can be useful to allow you to use objects which have already been registered.
+.PARAMETER ClsidList
+Specify a list of CLSIDs to use for the registrations.
 .INPUTS
 Type[] - COM accessible types.
 .OUTPUTS
@@ -499,11 +503,14 @@ function Out-ComTypeRegistry {
         [string]$Output,
         [switch]$CodeBase,
         [switch]$LocalMachine,
-        [switch]$Version2
+        [switch]$Version2,
+        [switch]$FakeClsid,
+        [string[]]$ClsidList
     )
     BEGIN {
         "REGEDIT4`r`n" | Set-Content $Output
         $created = New-Object System.Collections.Generic.HashSet[string]
+        $clsid_index = 0
     }
     PROCESS {
         $builder = [System.Text.StringBuilder]::new()
@@ -526,7 +533,19 @@ function Out-ComTypeRegistry {
             }
             $base += "\Software\Classes"
 
-            $guid = $type.GUID.ToString("B").ToUpper()
+            $clsid = $type.GUID
+            if ($FakeClsid) {
+              $clsid = [Guid]::NewGuid()
+            } elseif ($ClsidList.Count -gt 0) {
+                if ($clsid_index -eq $ClsidList.Count) {
+                  $PSCmdLet.WriteWarning("Used up all the CLSIDs, using a fake one")
+                  $clsid = [Guid]::NewGuid()
+                } else {
+                  $clsid = [Guid]::Parse($ClsidList[$clsid_index++])
+                }
+            }
+
+            $guid = $clsid.ToString("B").ToUpper()
 
             $version = "v4.0.30319"
             if ($Version2) {
@@ -565,6 +584,8 @@ Specify to emit the manifest as a JScript string which can be used with the Mani
 Specify to register the types with the v2 runtime. Default is the v4 runtime.
 .PARAMETER FakeClsid
 Specify to generate a new random CLSID when generating the manifest. This can be useful to allow you to use objects which have already been registered.
+.PARAMETER ClsidList
+Specify a list of CLSIDs to use for the registrations.
 .INPUTS
 Type[] - COM accessible types.
 .OUTPUTS
@@ -582,7 +603,8 @@ function Out-ComTypeManifest {
         [string]$Output,
         [switch]$ManifestString,
         [switch]$Version2,
-        [switch]$FakeClsid
+        [switch]$FakeClsid,
+        [string[]]$ClsidList
     )
     BEGIN {
         $assembly = $null
@@ -599,6 +621,7 @@ function Out-ComTypeManifest {
         $xmldoc.AppendChild($root) | Out-Null        
         $root.SetAttribute("manifestVersion", "1.0")
         $created = New-Object System.Collections.Generic.HashSet[string]
+        $clsid_index = 0
     }
     PROCESS {
         foreach($type in $Type) {
@@ -617,6 +640,13 @@ function Out-ComTypeManifest {
 
             if ($FakeClsid) {
                 $guid = [Guid]::NewGuid().ToString("B").ToUpper()
+            } elseif ($ClsidList.Count -gt 0) {
+                if ($clsid_index -eq $ClsidList.Count) {
+                  $PSCmdLet.WriteWarning("Used up all the CLSIDs, using a fake one")
+                  $guid = [Guid]::NewGuid().ToString("B").ToUpper()
+                } else {
+                  $guid = [Guid]::Parse($ClsidList[$clsid_index++]).ToString("B").ToUpper();
+                }
             } else {
                 $guid = $type.GUID.ToString("B").ToUpper()
             }
