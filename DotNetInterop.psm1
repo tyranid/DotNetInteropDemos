@@ -444,34 +444,54 @@ function Get-ComTypes {
 function Format-RegistryKey {
    param(
         [parameter(Mandatory=$true, Position=0)]
-        [string]$BasePath,
+        [string]$Root,
         [parameter(Mandatory=$true, Position=1)]
-        [System.Text.StringBuilder]$Builder,
+        [string]$BasePath,
         [parameter(Mandatory=$true, Position=2)]
+        [System.Text.StringBuilder]$Builder,
+        [parameter(Mandatory=$true, Position=3)]
         [string]$Name,
         [string]$Default,
-        [Hashtable]$Values = @{}
+        [Hashtable]$Values = @{},
+        [bool]$Inf
     )
 
-    $Builder.AppendFormat("[{0}\{1}]", $BasePath, $Name).AppendLine() | Out-Null
-    if ($Default.Length -gt 0) {
-        $Builder.AppendFormat("@=""{0}""", $Default).AppendLine() | Out-Null
-    }
+    if ($Inf) {
+        if ($Default.Length -gt 0 -or $Values.Count -gt 0) {
+            if ($Default.Length -gt 0) {
+                $Builder.AppendLine("$Root,$BasePath\$Name,,,""$Default""") | Out-Null
+            }
 
-    if ($Values.Count -gt 0) {
-        foreach($pair in $Values.GetEnumerator()) {
-            $Builder.AppendFormat("""{0}""=""{1}""", $pair.Name, $pair.Value).AppendLine() | Out-Null
+            foreach($pair in $Values.GetEnumerator()) {
+                $value_name = $pair.Name
+                $value = $pair.Value
+                $Builder.AppendLine("$Root,$BasePath\$Name,$value_name,,""$value""") | Out-Null
+            }
+        } else {
+            $Builder.AppendLine("$Root,$BasePath\$Name") | Out-Null
         }
-    }
+    } else {
+        $Builder.Append("[$Root\$BasePath\$Name]").AppendLine() | Out-Null
+        if ($Default.Length -gt 0) {
+            $Builder.AppendFormat("@=""{0}""", $Default).AppendLine() | Out-Null
+        }
 
-    $Builder.AppendLine() | Out-Null
+        if ($Values.Count -gt 0) {
+            foreach($pair in $Values.GetEnumerator()) {
+                $Builder.AppendFormat("""{0}""=""{1}""", $pair.Name, $pair.Value).AppendLine() | Out-Null
+            }
+        }
+
+        $Builder.AppendLine() | Out-Null
+    }
 }
 
 <#
 .SYNOPSIS
 Output a registry file for use with regedit or reg.exe to register a list of .NET COM classes.
 .DESCRIPTION
-This cmdlet accepts a list of COM accessible types and generates a registry file which can be used to register those types.
+This cmdlet accepts a list of COM accessible types and generates a registry file which can be used to register those types. You can 
+also specify the -Inf parameter to instead output an INF file to install the registry keys.
 .PARAMETER Type
 Specify a list of types. Any types which are not COM accessible and constructable are ignored.
 .PARAMETER Output
@@ -486,6 +506,8 @@ Specify to register the types with the v2 runtime. Default is the v4 runtime.
 Specify to generate a new random CLSID when generating the registry file. This can be useful to allow you to use objects which have already been registered.
 .PARAMETER ClsidList
 Specify a list of CLSIDs to use for the registrations.
+.PARAMETER Inf
+Specify the output format is an INF file rather that a REG file.
 .INPUTS
 Type[] - COM accessible types.
 .OUTPUTS
@@ -493,6 +515,9 @@ None
 .EXAMPLE
 Get-ComTypes "System" | Out-ComTypeRegistry -Output system_types.reg
 Get all COM types from the System assembly and generate a registry file to register them.
+.EXAMPLE
+Get-ComTypes "System" | Out-ComTypeRegistry -Output system_types.inf -Inf
+Get all COM types from the System assembly and generate an INF file to register them.
 #>
 function Out-ComTypeRegistry {
     [CmdletBinding()]
@@ -505,10 +530,26 @@ function Out-ComTypeRegistry {
         [switch]$LocalMachine,
         [switch]$Version2,
         [switch]$FakeClsid,
-        [string[]]$ClsidList
+        [string[]]$ClsidList,
+        [switch]$Inf
     )
     BEGIN {
-        "REGEDIT4`r`n" | Set-Content $Output
+        if ($Inf) {
+                 $header = @'
+; RUNDLL32.EXE SETUPAPI.DLL,InstallHinfSection DefaultInstall 128 path-to-inf\infname.inf
+[Version] 
+Signature="$WINDOWS NT$"
+
+[DefaultInstall] 
+AddReg = RegisterClasses
+
+[RegisterClasses]
+'@
+        } else {
+            $header = "REGEDIT4`r`n"
+        }
+
+        $header | Set-Content $Output
         $created = New-Object System.Collections.Generic.HashSet[string]
         $clsid_index = 0
     }
@@ -527,11 +568,11 @@ function Out-ComTypeRegistry {
                 continue
             }
 
-            $base = "HKEY_CURRENT_USER"
+            $root = "HKEY_CURRENT_USER"
             if ($LocalMachine) {
-                $base = "HKEY_LOCAL_MACHINE"
+                $root = "HKEY_LOCAL_MACHINE"
             }
-            $base += "\Software\Classes"
+            $base = "Software\Classes"
 
             $clsid = $type.GUID
             if ($FakeClsid) {
@@ -552,18 +593,18 @@ function Out-ComTypeRegistry {
                 $version = "v2.0.50727"
             }
 
-            Format-RegistryKey $base $builder $fullname -Default $fullname
-            Format-RegistryKey $base $builder "$fullname\CLSID" -Default $guid
-            Format-RegistryKey $base $builder "CLSID\$guid" -Default $fullname
+            Format-RegistryKey $root $base $builder $fullname -Default $fullname -Inf $Inf
+            Format-RegistryKey $root $base $builder "$fullname\CLSID" -Default $guid -Inf $Inf
+            Format-RegistryKey $root $base $builder "CLSID\$guid" -Default $fullname -Inf $Inf
 
             $regvalues = @{ThreadingModel="Both";Class=$fullname;Assembly=$type.Assembly.FullName;RuntimeVersion=$version}
             if ($CodeBase) {
                 $regvalues.Add("CodeBase", $type.Assembly.CodeBase)
             }
 
-            Format-RegistryKey $base $builder "CLSID\$guid\InprocServer32" -Default "mscoree.dll" -Values $regvalues
-            Format-RegistryKey $base $builder "CLSID\$guid\ProgID" -Default $fullname
-            Format-RegistryKey $base $builder "CLSID\$guid\Implemented Categories\{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}"
+            Format-RegistryKey $root $base $builder "CLSID\$guid\InprocServer32" -Default "mscoree.dll" -Values $regvalues -Inf $Inf
+            Format-RegistryKey $root $base $builder "CLSID\$guid\ProgID" -Default $fullname -Inf $Inf
+            Format-RegistryKey $root $base $builder "CLSID\$guid\Implemented Categories\{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}" -Inf $Inf
         }
         $builder | Add-Content $Output
     }
@@ -687,6 +728,122 @@ function Out-ComTypeManifest {
         }
     }
 }
+
+
+<#
+.SYNOPSIS
+Output an INF file for use with the INF installer to register a list of .NET COM classes.
+.DESCRIPTION
+This cmdlet accepts a list of COM accessible types and generates an INF file which can be used to register those types. For example
+you can install the keys with the command RUNDLL32.EXE SETUPAPI.DLL,InstallHinfSection DefaultInstall 128 path-to-inf\infname.inf.
+Note that if you run this command as a normal user it will show a dialog saying the installation failed. However the registry keys
+will have still been created.
+.PARAMETER Type
+Specify a list of types. Any types which are not COM accessible and constructable are ignored.
+.PARAMETER Output
+Specify the output file.
+.PARAMETER CodeBase
+Specify to emit the CodeBase value for the registration.
+.PARAMETER LocalMachine
+Specify to register the types in the Local Machine hive. The default is the Current User hive.
+.PARAMETER Version2
+Specify to register the types with the v2 runtime. Default is the v4 runtime.
+.PARAMETER FakeClsid
+Specify to generate a new random CLSID when generating the registry file. This can be useful to allow you to use objects which have already been registered.
+.PARAMETER ClsidList
+Specify a list of CLSIDs to use for the registrations.
+.INPUTS
+Type[] - COM accessible types.
+.OUTPUTS
+None
+.EXAMPLE
+Get-ComTypes "System" | Out-ComTypeRegistry -Output system_types.reg
+Get all COM types from the System assembly and generate a registry file to register them.
+#>
+function Out-ComTypeInf {
+    [CmdletBinding()]
+    param(
+        [parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName = $true)]
+        [System.Type[]]$Type,
+        [parameter(Mandatory=$true, Position=1)]
+        [string]$Output,
+        [switch]$CodeBase,
+        [switch]$LocalMachine,
+        [switch]$Version2,
+        [switch]$FakeClsid,
+        [string[]]$ClsidList
+    )
+    BEGIN {
+             $header = @"
+[Version] 
+Signature="$WINDOWS NT$"
+
+[DefaultInstall] 
+AddReg = RegisterClasses
+
+[RegisterClasses]
+"@
+        $header | Set-Content $Output
+        $created = New-Object System.Collections.Generic.HashSet[string]
+        $clsid_index = 0
+    }
+    PROCESS {
+        $builder = [System.Text.StringBuilder]::new()
+        foreach($type in $Type) {
+            $fullname = $type.FullName
+            $valid = Get-IsConstructableCOMType $type[0]
+            if (!$valid) {
+                $PSCmdLet.WriteWarning("Type $fullname is not a constructable COM object")
+                continue
+            }
+
+            if (!$created.Add($fullname)) {
+                $PSCmdLet.WriteWarning("Type $fullname has already been emitted")
+                continue
+            }
+
+            $base = "HKEY_CURRENT_USER"
+            if ($LocalMachine) {
+                $base = "HKEY_LOCAL_MACHINE"
+            }
+            $base += "\Software\Classes"
+
+            $clsid = $type.GUID
+            if ($FakeClsid) {
+              $clsid = [Guid]::NewGuid()
+            } elseif ($ClsidList.Count -gt 0) {
+                if ($clsid_index -eq $ClsidList.Count) {
+                  $PSCmdLet.WriteWarning("Used up all the CLSIDs, using a fake one")
+                  $clsid = [Guid]::NewGuid()
+                } else {
+                  $clsid = [Guid]::Parse($ClsidList[$clsid_index++])
+                }
+            }
+
+            $guid = $clsid.ToString("B").ToUpper()
+
+            $version = "v4.0.30319"
+            if ($Version2) {
+                $version = "v2.0.50727"
+            }
+
+            Format-RegistryKey $base $builder $fullname -Default $fullname
+            Format-RegistryKey $base $builder "$fullname\CLSID" -Default $guid
+            Format-RegistryKey $base $builder "CLSID\$guid" -Default $fullname
+
+            $regvalues = @{ThreadingModel="Both";Class=$fullname;Assembly=$type.Assembly.FullName;RuntimeVersion=$version}
+            if ($CodeBase) {
+                $regvalues.Add("CodeBase", $type.Assembly.CodeBase)
+            }
+
+            Format-RegistryKey $base $builder "CLSID\$guid\InprocServer32" -Default "mscoree.dll" -Values $regvalues
+            Format-RegistryKey $base $builder "CLSID\$guid\ProgID" -Default $fullname
+            Format-RegistryKey $base $builder "CLSID\$guid\Implemented Categories\{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}"
+        }
+        $builder | Add-Content $Output
+    }
+}
+
 
 function Get-PInvokeMethodsFromAssembly {
     [CmdletBinding()]
