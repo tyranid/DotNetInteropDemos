@@ -231,7 +231,7 @@ function Get-IsCOMRegistered
 function Get-IsMemberCOMVisible {
     param([System.Reflection.MemberInfo]$Member)
     $type = [System.Runtime.InteropServices.ComVisibleAttribute]
-    $attr = $Member.GetCustomAttributes($t, $false)
+    $attr = $Member.GetCustomAttributes($type, $false)
     if ($attr.Count -gt 0) {
         return $attr.Value
     }
